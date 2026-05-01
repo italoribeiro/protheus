@@ -1,0 +1,214 @@
+// =============================================================================
+// Fonte     : custom.fornecedor.api.tlpp
+// Descrição : API REST - Inclusão de Fornecedor na SA2 via FWModel (MVC)
+// Método    : POST
+// Rota      : /makro/custom/fornecedor
+// Autor     : Italo Ribeiro
+// Data      : 2025
+// Versão    : 1.6.0
+// =============================================================================
+
+#include "tlpp-core.th"
+#include "fwmvcdef.ch"
+#include "tlpp-rest.th"
+
+// =============================================================================
+// fTrunc — trunca string respeitando X3_TAMANHO do campo
+// =============================================================================
+Static Function fTrunc(cValor As Character, nTam As Numeric) As Character
+Return SubStr(AllTrim(cValor), 1, nTam)
+
+// =============================================================================
+// fSoDigitos — remove qualquer caractere não numérico da string
+// =============================================================================
+Static Function fSoDigitos(cValor As Character) As Character
+    Local cResult As Character
+    Local nI      As Numeric
+    Local cChar   As Character
+
+    cResult := ""
+
+    For nI := 1 To Len(AllTrim(cValor))
+        cChar := SubStr(cValor, nI, 1)
+        If cChar >= "0" .AND. cChar <= "9"
+            cResult += cChar
+        EndIf
+    Next nI
+
+Return cResult
+
+// =============================================================================
+// @Post — registra a rota no AppServer TLPP
+// URL: http://<servidor>:8080/rest/makro/custom/fornecedor
+// =============================================================================
+@Post("/makro/custom/fornecedor")
+User Function postFornecedor() As Logical
+
+    Local cBody     := oRest:getBodyRequest()  as character
+    Local jBody     := JsonObject():new()        as json
+    Local jRet      := JsonObject():New()        as json
+    Local lRet      := .T.                       as logical
+    Local oModel                                 as object
+    Local oModelSA2                              as object
+    Local aErro                                  as array
+    Local cMsg                                   as character
+    Local cCGCLimpo                              as character   // CGC somente dígitos
+    Local cLoja                                  as character   // 2 últimos dígitos do CGC
+    Local cCodGerado                             as character   // A2_COD gerado pelo Init após Activate()
+
+    // -------------------------------------------------------------------------
+    // Parse do Body
+    // -------------------------------------------------------------------------
+    jBody:fromJSON(cBody)
+
+    jRet["ok"]  := .T.
+    jRet["cod"] := ""
+    jRet["msg"] := ""
+
+    // -------------------------------------------------------------------------
+    // Valida e limpa o CGC — extrai a loja ANTES de carregar o model
+    // -------------------------------------------------------------------------
+    cCGCLimpo := fSoDigitos(jBody["A2_CGC"])
+
+    If Len(cCGCLimpo) < 2
+        jRet["ok"]  := .F.
+        jRet["msg"] := "A2_CGC invalido ou nao informado. Nao foi possivel derivar A2_LOJA."
+        oRest:setKeyHeaderResponse("Content-Type", "application/json")
+        oRest:setResponse(jRet:toJson())
+        FreeObj(jRet)
+        FreeObj(jBody)
+        Return .T.
+    EndIf
+
+    // -------------------------------------------------------------------------
+    // [CORREÇÃO APLICADA]: REGRA DE NEGÓCIO DA LOJA
+    // Substituímos a lógica de pegar os dígitos verificadores (final do CNPJ) 
+    // pela lógica correta de pegar a filial ou fixar "01" para CPF.
+    // -------------------------------------------------------------------------
+    If Len(cCGCLimpo) == 14 // Se for CNPJ (14 dígitos)
+        // Pega os 2 últimos dígitos do bloco de filial. Ex: 12345678[0001]95 -> "01"
+        cLoja := SubStr(cCGCLimpo, 11, 2) 
+    Else // Se for CPF ou outro formato
+        cLoja := "01"
+    EndIf
+
+    // -------------------------------------------------------------------------
+    // Carrega o Model e ativa — o Init do SX3 gera o A2_COD aqui dentro
+    // -------------------------------------------------------------------------
+    oModel := FWLoadModel("MATA020")
+    oModel:SetOperation(MODEL_OPERATION_INSERT)
+    lRet   := oModel:Activate()
+
+    If lRet
+        oModelSA2 := oModel:GetModel("SA2MASTER")
+    EndIf
+
+    // -------------------------------------------------------------------------
+    // Lê o A2_COD gerado pelo Init IMEDIATAMENTE após o Activate()
+    // -------------------------------------------------------------------------
+    If lRet
+        cCodGerado := oModelSA2:GetValue("A2_COD")
+
+        If Empty(cCodGerado)
+            // Init não executou — Inic. Padrão não está configurado no SX3
+            jRet["ok"]  := .F.
+            jRet["msg"] := "A2_COD nao foi gerado pelo Init. Configure Inic. Padrao=GETSXENUM(SA2,A2_COD) no SX3."
+            oModel:DeActivate()
+            oRest:setKeyHeaderResponse("Content-Type", "application/json")
+            oRest:setResponse(jRet:toJson())
+            FreeObj(jRet)
+            FreeObj(jBody)
+            Return .T.
+        EndIf
+    EndIf
+
+    // -------------------------------------------------------------------------
+    // PREENCHIMENTO DOS DADOS 
+    // [CORREÇÃO APLICADA]: Removemos a injeção do A2_LOJA do início do bloco
+    // -------------------------------------------------------------------------
+
+    // Dados Cadastrais
+    lRet := lRet .AND. oModelSA2:SetValue("A2_NOME",    fTrunc(jBody["A2_NOME"],    40) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_NREDUZ",  fTrunc(jBody["A2_NREDUZ"],  20) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_TIPO",    fTrunc(jBody["A2_TIPO"],     1) )
+
+    // Endereço
+    lRet := lRet .AND. oModelSA2:SetValue("A2_END",     fTrunc(jBody["A2_END"],     40) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_BAIRRO",  fTrunc(jBody["A2_BAIRRO"],  20) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_EST",     fTrunc(jBody["A2_EST"],      2) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_CEP",     fTrunc(jBody["A2_CEP"],      8) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_MUN",     fTrunc(jBody["A2_MUN"],     20) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_COD_MUN", fTrunc(jBody["A2_COD_MUN"],  5) )
+
+    // Fiscal / Tributário
+    lRet := lRet .AND. oModelSA2:SetValue("A2_INSCR",   fTrunc(jBody["A2_INSCR"],   18) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_CGC",     fTrunc(cCGCLimpo,           14) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_PAIS",    fTrunc(jBody["A2_PAIS"],     3) )
+    lRet := lRet .AND. oModelSA2:SetValue("A2_CODPAIS", fTrunc(jBody["A2_CODPAIS"],  5) )
+
+    // Financeiro
+    lRet := lRet .AND. oModelSA2:SetValue("A2_COND",    fTrunc(jBody["A2_COND"],     3) )
+
+    // Contato
+    lRet := lRet .AND. oModelSA2:SetValue("A2_EMAIL",   fTrunc(jBody["A2_EMAIL"],   80) )
+
+
+
+    // -------------------------------------------------------------------------
+    // [CORREÇÃO APLICADA]: PROTEÇÃO DE CHAVE E GATILHOS DO MVC
+    // Movemos A2_LOJA para cá, após todos os gatilhos (como o de CGC) terem
+    // sido executados, e usamos o LoadValue() para ignorar bloqueios visuais.
+    // -------------------------------------------------------------------------
+    If lRet
+        oModelSA2:LoadValue("A2_LOJA", cLoja)
+    EndIf
+
+    // -------------------------------------------------------------------------
+    // VldData — valida obrigatoriedade, X3_VALID e ponto de entrada A020OK
+    // -------------------------------------------------------------------------
+    lRet := lRet .AND. oModel:VldData()
+
+    // =========================================================================
+    // SUCESSO
+    // =========================================================================
+    If lRet
+
+        jRet["cod"] := cCodGerado + "/" + cLoja
+        jRet["msg"] := "Fornecedor incluido com sucesso!"
+
+        oModel:CommitData()
+        oModel:DeActivate()
+
+    // =========================================================================
+    // FALHA
+    // =========================================================================
+    Else
+
+        aErro := oModel:GetErrorMessage(.T.)
+
+        cMsg := "Id do formulario de origem:" + " [" + AllToChar( aErro[1] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Id do campo de origem:     " + " [" + AllToChar( aErro[2] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Id do formulario de erro:  " + " [" + AllToChar( aErro[3] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Id do campo de erro:       " + " [" + AllToChar( aErro[4] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Id do erro:                " + " [" + AllToChar( aErro[5] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Mensagem do erro:          " + " [" + AllToChar( aErro[6] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Mensagem da solucao:       " + " [" + AllToChar( aErro[7] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Valor atribuido:           " + " [" + AllToChar( aErro[8] ) + "]" + Chr(13) + Chr(10)
+        cMsg += "Valor anterior:            " + " [" + AllToChar( aErro[9] ) + "]" + Chr(13) + Chr(10)
+
+        jRet["ok"]  := .F.
+        jRet["msg"] := cMsg
+
+        If oModel:IsActive()
+            oModel:DeActivate()
+        EndIf
+
+    EndIf
+
+    oRest:setKeyHeaderResponse("Content-Type", "application/json")
+    oRest:setResponse(jRet:toJson())
+
+    FreeObj(jRet)
+    FreeObj(jBody)
+
+Return .T.
