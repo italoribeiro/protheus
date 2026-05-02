@@ -68,3 +68,39 @@ Imagine a tela de consulta de um App. Você quer pesquisar os Fornecedores Ativo
     Como fica a requisição:
     GET http://localhost:8080/rest/makro/custom/fornecedor?filter=substringof('COMERCIO', A2_NOME)&fields=a2_cod,a2_nome,a2_cgc&order=A2_COD&page=1&pagesize=10
 
+
+
+## 🛠️ Exemplos de Uso da API (CRUD Completo)
+
+Abaixo estão os exemplos de requisição utilizando o `cURL`. O parâmetro `:id` na URL corresponde à concatenação exata do **Código do Fornecedor** com a **Loja** (Ex: `00000501`).
+
+### 1. Atualização Completa (PUT)
+Substitui os dados principais do fornecedor. Ideal para formulários completos de edição.
+
+```bash
+curl --request PUT 'http://localhost:8080/rest/makro/custom/fornecedor/00000501' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "A2_NOME": "NOVO NOME DA EMPRESA S.A",
+    "A2_NREDUZ": "NOVO NOME"
+}'
+
+
+2. Atualização Parcial (PATCH)
+
+Atualiza apenas os campos enviados no JSON. Ideal para integrações com Fluig/RM onde apenas uma informação muda (ex: atualização de e-mail ou status), economizando processamento.
+
+curl --request PATCH 'http://localhost:8080/rest/makro/custom/fornecedor/00000501' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "A2_EMAIL": "contato_atualizado@empresa.com.br"
+}'
+
+3. Exclusão (DELETE)
+
+Realiza a exclusão lógica do fornecedor no Protheus (D_E_L_E_T_ = '*'). O Protheus validará automaticamente se há amarrações (ex: pedidos em aberto) antes de confirmar a exclusão.
+
+curl --request DELETE 'http://localhost:8080/rest/makro/custom/fornecedor/00000501'
+
+
+
