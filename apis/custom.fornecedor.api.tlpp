@@ -4,7 +4,7 @@
 // Rota      : /makro/custom/fornecedor
 // Autor     : Italo Ribeiro
 // Data      : 2025
-// Versão    : 2.0.0
+// Versão    : 4.0.0 - Usando FWAdapterBaseV2 para o GET OData
 // =============================================================================
 
 #include "tlpp-core.th"
@@ -13,32 +13,25 @@
 #include "topconn.ch"
 
 // =============================================================================
-// fTrunc — trunca string respeitando X3_TAMANHO do campo
+// Funções Estáticas de Apoio
 // =============================================================================
 Static Function fTrunc(cValor As Character, nTam As Numeric) As Character
 Return SubStr(AllTrim(cValor), 1, nTam)
 
-// =============================================================================
-// fSoDigitos — remove qualquer caractere não numérico da string
-// =============================================================================
 Static Function fSoDigitos(cValor As Character) As Character
-    Local cResult As Character
+    Local cResult As Character := ""
     Local nI      As Numeric
     Local cChar   As Character
-
-    cResult := ""
-
     For nI := 1 To Len(AllTrim(cValor))
         cChar := SubStr(cValor, nI, 1)
         If cChar >= "0" .AND. cChar <= "9"
             cResult += cChar
         EndIf
     Next nI
-
 Return cResult
 
 // =============================================================================
-// @Post — INCLUSÃO DE FORNECEDOR
+// @Post — INCLUSÃO DE FORNECEDOR (MVC)
 // =============================================================================
 @Post("/makro/custom/fornecedor")
 User Function postFornecedor() As Logical
@@ -55,7 +48,6 @@ User Function postFornecedor() As Logical
     Local cLoja                                  as character
     Local cCodGerado                             as character
     
-    // Variáveis para validação de duplicidade
     Local cNomeFor  As Character
     Local cQryDup   As Character
     Local cAliasQry As Character
@@ -72,7 +64,7 @@ User Function postFornecedor() As Logical
     If Len(cCGCLimpo) < 2
         jRet["ok"]  := .F.
         jRet["msg"] := "A2_CGC invalido ou nao informado."
-        oRest:setStatusCode(400) // Bad Request
+        oRest:setStatusCode(400) 
         oRest:setKeyHeaderResponse("Content-Type", "application/json")
         oRest:setResponse(jRet:toJson())
         FreeObj(jRet)
@@ -86,27 +78,21 @@ User Function postFornecedor() As Logical
         cLoja := "01"
     EndIf
 
-    // -------------------------------------------------------------------------
-    // [NOVO: VALIDAÇÃO DE DUPLICIDADE - FAIL FAST]
-    // Verifica direto no banco antes de instanciar o MVC, poupando memória.
-    // -------------------------------------------------------------------------
+    // Fail Fast: Verifica Duplicidade
     cAliasQry := GetNextAlias()
     cQryDup := "SELECT A2_COD, A2_LOJA, A2_NOME FROM " + RetSqlName("SA2") + " "
     cQryDup += "WHERE D_E_L_E_T_ = ' ' "
     cQryDup += "AND (A2_CGC = '" + cCGCLimpo + "' OR A2_NOME = '" + cNomeFor + "')"
 
-    // TCGenQry traduz a query para o banco de dados em uso
     cQryDup := ChangeQuery(cQryDup)
     DbUseArea(.T., "TOPCONN", TcGenQry(,,cQryDup), cAliasQry, .T., .T.)
 
     If !(cAliasQry)->(EOF())
         jRet["ok"]  := .F.
         jRet["msg"] := "Duplicidade! Fornecedor ja existe: " + AllTrim((cAliasQry)->A2_COD) + "-" + AllTrim((cAliasQry)->A2_LOJA) + " (" + AllTrim((cAliasQry)->A2_NOME) + ")"
-        
-        oRest:setStatusCode(409) // HTTP 409 Conflict
+        oRest:setStatusCode(409)
         oRest:setKeyHeaderResponse("Content-Type", "application/json")
         oRest:setResponse(jRet:toJson())
-        
         (cAliasQry)->(DbCloseArea())
         FreeObj(jRet)
         FreeObj(jBody)
@@ -114,9 +100,7 @@ User Function postFornecedor() As Logical
     EndIf
     (cAliasQry)->(DbCloseArea())
 
-    // -------------------------------------------------------------------------
-    // Carrega o Model e processa a inclusão
-    // -------------------------------------------------------------------------
+    // Aciona MVC
     oModel := FWLoadModel("MATA020")
     oModel:SetOperation(MODEL_OPERATION_INSERT)
     lRet   := oModel:Activate()
@@ -129,7 +113,7 @@ User Function postFornecedor() As Logical
             jRet["ok"]  := .F.
             jRet["msg"] := "A2_COD nao foi gerado pelo Init. Configure o SX3."
             oModel:DeActivate()
-            oRest:setStatusCode(500) // Internal Server Error
+            oRest:setStatusCode(500)
             oRest:setKeyHeaderResponse("Content-Type", "application/json")
             oRest:setResponse(jRet:toJson())
             FreeObj(jRet)
@@ -138,30 +122,22 @@ User Function postFornecedor() As Logical
         EndIf
     EndIf
 
-    // Dados Cadastrais
     lRet := lRet .AND. oModelSA2:SetValue("A2_NOME",    cNomeFor )
     lRet := lRet .AND. oModelSA2:SetValue("A2_NREDUZ",  fTrunc(jBody["A2_NREDUZ"],  20) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_TIPO",    fTrunc(jBody["A2_TIPO"],     1) )
-
-    // Endereço
     lRet := lRet .AND. oModelSA2:SetValue("A2_END",     fTrunc(jBody["A2_END"],     40) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_BAIRRO",  fTrunc(jBody["A2_BAIRRO"],  20) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_EST",     fTrunc(jBody["A2_EST"],      2) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_CEP",     fTrunc(jBody["A2_CEP"],      8) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_MUN",     fTrunc(jBody["A2_MUN"],     20) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_COD_MUN", fTrunc(jBody["A2_COD_MUN"],  5) )
-
-    // Fiscal / Tributário
     lRet := lRet .AND. oModelSA2:SetValue("A2_INSCR",   fTrunc(jBody["A2_INSCR"],   18) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_CGC",     fTrunc(cCGCLimpo,           14) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_PAIS",    fTrunc(jBody["A2_PAIS"],     3) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_CODPAIS", fTrunc(jBody["A2_CODPAIS"],  5) )
-
-    // Financeiro / Contato
     lRet := lRet .AND. oModelSA2:SetValue("A2_COND",    fTrunc(jBody["A2_COND"],     3) )
     lRet := lRet .AND. oModelSA2:SetValue("A2_EMAIL",   fTrunc(jBody["A2_EMAIL"],   80) )
 
-    // Forçar chave e validar
     If lRet
         oModelSA2:LoadValue("A2_LOJA", cLoja)
     EndIf
@@ -171,7 +147,7 @@ User Function postFornecedor() As Logical
     If lRet
         jRet["cod"] := cCodGerado + "/" + cLoja
         jRet["msg"] := "Fornecedor incluido com sucesso!"
-        oRest:setStatusCode(201) // Created
+        oRest:setStatusCode(201)
         oModel:CommitData()
         oModel:DeActivate()
     Else
@@ -179,7 +155,7 @@ User Function postFornecedor() As Logical
         cMsg := "Erro na validacao do MVC: " + AllToChar( aErro[6] )
         jRet["ok"]  := .F.
         jRet["msg"] := cMsg
-        oRest:setStatusCode(400) // Bad Request
+        oRest:setStatusCode(400)
         If oModel:IsActive()
             oModel:DeActivate()
         EndIf
@@ -194,105 +170,151 @@ User Function postFornecedor() As Logical
 Return .T.
 
 // =============================================================================
-// @Get — CONSULTA DE FORNECEDORES COM FILTROS DINÂMICOS
-// URL Ex: /makro/custom/fornecedor?A2_EST=SP&limit=50&offset=0
+// @Get — CONSULTA DE FORNECEDORES USANDO FWAdapterBaseV2
 // =============================================================================
 @Get("/makro/custom/fornecedor")
 User Function getFornecedor() As Logical
-
-    Local aParams    := oRest:getQueryRequest()
-    Local jResponse  := JsonObject():New()
-    Local jItems     := JsonArray():New()
-    Local jRow       
-    Local cQry       As Character
-    Local cWhere     := " D_E_L_E_T_ = ' ' "
-    Local cAliasQry  := GetNextAlias()
-    Local nI         As Numeric
-    Local cKey, cVal
+    Local jQuery        := oRest:getQueryRequest()      as json
+    Local aFilter       := {}                           as array
+    Local jRet          as json
+    Local cWhere        := ""                           as character
+    Local oSA2Adapter   as object
     
-    // Paginação Padrão
-    Local nLimit     := 50
-    Local nOffset    := 0
+    // Define os campos permitidos no Dicionário para uso da API
+    Local aAllFieldsSA2 := {"A2_COD", "A2_LOJA", "A2_NOME", "A2_NREDUZ", "A2_CGC", "A2_TIPO", "A2_EST", "A2_MUN"}
 
-    // -------------------------------------------------------------------------
-    // 1. Interpreta os parâmetros da URL para montar o WHERE e a Paginação
-    // -------------------------------------------------------------------------
-    For nI := 1 To Len(aParams)
-        cKey := Upper(AllTrim(aParams[nI][1]))
-        cVal := AllTrim(aParams[nI][2])
-
-        // Trata os controles de paginação
-        If cKey == "LIMIT"
-            nLimit := Val(cVal)
-            Loop
-        EndIf
-        If cKey == "OFFSET"
-            nOffset := Val(cVal)
-            Loop
-        EndIf
-
-        // Trata os filtros de coluna (impede injeção básica com FWX3Titulo)
-        If Left(cKey, 3) == "A2_"
-            // Adiciona a condição ao WHERE. Ex: AND A2_EST = 'SP'
-            cWhere += " AND " + cKey + " = '" + cVal + "' "
-        EndIf
-    Next nI
-
-    // -------------------------------------------------------------------------
-    // 2. Monta e Executa a Query SQL
-    // -------------------------------------------------------------------------
-    cQry := "SELECT A2_COD, A2_LOJA, A2_NOME, A2_NREDUZ, A2_CGC, A2_EST, A2_MUN "
-    cQry += "FROM " + RetSqlName("SA2") + " "
-    cQry += "WHERE " + cWhere + " "
-    cQry += "ORDER BY A2_COD "
+    oSA2Adapter := SA2Adapter():New("GET")
     
-    // Aplica a paginação na query compatível com o banco
-    cQry := ChangeQuery(cQry)
-    
-    // Abre o cursor
-    DbUseArea(.T., "TOPCONN", TcGenQry(,,cQry), cAliasQry, .T., .T.)
+    // Adiciona o mapa de campos Json/ResultSet
+    oSA2Adapter:AddMap(aAllFieldsSA2, "SA2")
 
-    // Pula os registros conforme o OFFSET (skip)
-    If nOffset > 0
-        (cAliasQry)->(DbSkip(nOffset))
+    // Tratamento de Paginação (PageSize)
+    if jQuery:HasProperty("pagesize")
+        oSA2Adapter:setPageSize(Val(jQuery["pagesize"]))
+    Else
+        oSA2Adapter:setPageSize( 25 )
+    endif
+
+    // Tratamento de Ordenação
+    if jQuery:HasProperty("order")
+        oSA2Adapter:setOrderQuery(jQuery["order"])
+    else
+        oSA2Adapter:SetOrderQuery("A2_COD,A2_LOJA")
+    endif
+
+    // Tratamento de Paginação (Page)
+    if jQuery:HasProperty("page")
+        oSA2Adapter:setPage(Val(jQuery["page"]))
+    Else
+        oSA2Adapter:setPage(1)
+    endif
+
+    // Tratamento de Seleção de Campos Retornados (Fields)
+    If jQuery:HasProperty("fields")
+        oSA2Adapter:SetFields( jQuery["fields"] )
+    Else
+        oSA2Adapter:SetFields( "A2_COD,A2_LOJA,A2_NOME,A2_CGC,regsa2" )
+    Endif
+
+    // Tratamento do Filtro OData ($filter)
+    If jQuery:HasProperty("filter")
+        aAdd(aFilter, {"FILTER", jQuery["filter"]}) 
+    EndIf
+    If Len(aFilter) > 0
+        oSA2Adapter:setUrlFilter(aFilter)
     EndIf
 
-    // -------------------------------------------------------------------------
-    // 3. Varre o cursor populando o JSON Array até o LIMIT
-    // -------------------------------------------------------------------------
-    nI := 0
-    While !(cAliasQry)->(EOF()) .AND. nI < nLimit
-        jRow := JsonObject():New()
+    // Cláusula Where Adicional
+    If jQuery:HasProperty("where")
+        cWhere  := jQuery["where"]
+    EndIf
         
-        jRow["A2_COD"]    := (cAliasQry)->A2_COD
-        jRow["A2_LOJA"]   := (cAliasQry)->A2_LOJA
-        jRow["A2_NOME"]   := AllTrim((cAliasQry)->A2_NOME)
-        jRow["A2_NREDUZ"] := AllTrim((cAliasQry)->A2_NREDUZ)
-        jRow["A2_CGC"]    := AllTrim((cAliasQry)->A2_CGC)
-        jRow["A2_EST"]    := (cAliasQry)->A2_EST
-        jRow["A2_MUN"]    := AllTrim((cAliasQry)->A2_MUN)
+    oSA2Adapter:GetListSA2( cWhere )
 
-        jItems:append(jRow)
+    If oSA2Adapter:IsOk()
+        jRet    := oSA2Adapter:gtJsonObjResponse()
         
-        nI++
-        (cAliasQry)->(DbSkip())
-    EndDo
+        If jQuery:HasProperty("debug")
+            jRet["query"]   := oSA2Adapter:oJsonObj:cQuery
+        EndIf
+        
+        oRest:setResponse( jRet:ToJson() )
+    Else
+        // Utiliza a função padrão para lançar erro HTTP no TLPP REST
+        SetRestFault(oSA2Adapter:getCode(), oSA2Adapter:getMessage())
+    EndIf
 
-    (cAliasQry)->(DbCloseArea())
+    oSA2Adapter:DeActivate()
+    oSA2Adapter := nil
 
-    // -------------------------------------------------------------------------
-    // 4. Retorna o Response
-    // -------------------------------------------------------------------------
-    jResponse["items"]  := jItems
-    jResponse["limit"]  := nLimit
-    jResponse["offset"] := nOffset
-    jResponse["count"]  := jItems:Length()
-
-    oRest:setStatusCode(200) // OK
     oRest:setKeyHeaderResponse("Content-Type", "application/json")
-    oRest:setResponse(jResponse:toJson())
-
-    FreeObj(jResponse)
-    FreeObj(jItems)
 
 Return .T.
+
+
+// =============================================================================
+// Class: SA2Adapter
+// Desc : Adapter para a entidade SA2 herdando da arquitetura padrão FWAdapterBaseV2
+// =============================================================================
+Class SA2Adapter FROM FWAdapterBaseV2
+    Public METHOD New()
+    Public METHOD GetListSA2()
+    Public Method AddMap()
+EndClass
+
+Method New( cVerb ) CLASS SA2Adapter
+    _Super:New( cVerb, .T. )
+return self
+
+Method GetListSA2(cWhereAdd) CLASS SA2Adapter
+    Local cWhere    as character
+    Local aArea     := FwGetArea()
+
+    Default cWhereAdd := ""
+
+    // Informa a Query a ser utilizada pela API
+    ::SetQuery( GetQuerySA2() )
+    
+    // Informa a clausula Where básica da Query
+    cWhere := "SA2.D_E_L_E_T_ = ' '"
+    
+    If !Empty(cWhereAdd)
+        cWhere += " AND ("+cWhereAdd+")"
+    EndIf
+    
+    ::SetWhere( cWhere )
+    
+    // Executa a consulta, se retornar .T. tudo ocorreu conforme esperado
+    If ::Execute()
+        // Gera o arquivo Json com o retorno da Query
+        ::FillGetResponse()
+    EndIf
+    
+    FwrestArea(aArea)
+Return
+
+Method AddMap(aAllFields as array, cAlias as character) Class SA2Adapter
+    Local nCont as numeric
+    
+    // Mapeamento do Recno como ID interno
+    ::AddMapFields( "id", "regsa2", .T., .F., { "regsa2", "N", 15, 0 }, "SA2.R_E_C_N_O_" )
+    
+    // Busca dados no Dicionário SX3 para criar o mapa tipado
+    For nCont := 1 to Len(aAllFields)
+        ::AddMapFields( ;
+            Lower(aAllFields[nCont]), ;                                    // Chave do JSON em minúsculo
+            aAllFields[nCont], ;                                           // Nome do Campo no Banco
+            .T., ;                                                         // Visível no retorno?
+            .F., ;                                                         // Permite atualização?
+            { aAllFields[nCont], GetSx3Cache(aAllFields[nCont],"X3_TIPO"), GetSx3Cache(aAllFields[nCont],"X3_TAMANHO") , GetSx3Cache(aAllFields[nCont],"X3_DECIMAL") } ;
+        )
+    Next
+Return
+
+Static Function GetQuerySA2()
+    Local cQuery AS CHARACTER
+    // Tags dinâmicas lidas pelo FWAdapterBaseV2: #QueryFields# e #QueryWhere#
+    cQuery := " SELECT #QueryFields#"
+    cQuery += " FROM " + RetSqlName( 'SA2' ) + " SA2 "
+    cQuery += " WHERE #QueryWhere#"
+Return cQuery
