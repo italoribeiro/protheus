@@ -19,9 +19,12 @@ Static Function fTrunc(cValor As Character, nTam As Numeric) As Character
 Return SubStr(AllTrim(cValor), 1, nTam)
 
 Static Function fSoDigitos(cValor As Character) As Character
-    Local cResult As Character := ""
+    Local cResult As Character
     Local nI      As Numeric
     Local cChar   As Character
+
+    cResult := "" // Atribuição separada da declaração
+
     For nI := 1 To Len(AllTrim(cValor))
         cChar := SubStr(cValor, nI, 1)
         If cChar >= "0" .AND. cChar <= "9"
