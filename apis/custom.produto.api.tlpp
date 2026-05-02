@@ -4,7 +4,7 @@
 // Rota      : /makro/custom/produto
 // Autor     : Italo Ribeiro
 // Data      : 2026
-// Versão    : 1.1.5 - CRUD MVC + OData + Proteção de Duplicidade (Clean Code)
+// Versão    : 1.2.5 - CRUD MVC + OData + Tipagem Forte (Linter Final Fix)
 // =============================================================================
 
 #include "tlpp-core.th"
@@ -16,9 +16,9 @@
 // FUNÇÃO AUXILIAR: Mapeador Dinâmico de Payload
 // =============================================================================
 Static Function fInjectPayload(oModelSB1 As Object, jBody As Json, lIsPost As Logical) As Logical
-    Local aKeys  := jBody:GetNames()
-    Local nI
-    Local cField
+    Local aKeys  := jBody:GetNames() as array
+    Local nI     as numeric
+    Local cField as character
     
     For nI := 1 To Len(aKeys)
         cField := Upper(AllTrim(aKeys[nI]))
@@ -36,12 +36,12 @@ Return .T.
 // FUNÇÃO AUXILIAR: Localiza o produto e prepara o MVC
 // =============================================================================
 Static Function fPrepModelProd(cId As Character, nOperation As Numeric, oModel As Object, jRet As Json) As Logical
-    Local lRet := .F.
+    Local lRet as logical
 
+    lRet := .F.
     DbSelectArea("SB1")
     SB1->(DbSetOrder(1)) // B1_FILIAL + B1_COD
 
-    // Padroniza o ID com espaços à direita conforme dicionário
     If SB1->(DbSeek(xFilial("SB1") + PadR(AllTrim(cId), TamSx3("B1_COD")[1])))
         oModel := FWLoadModel("MATA010")
         oModel:SetOperation(nOperation)
@@ -65,13 +65,34 @@ Return lRet
 // =============================================================================
 @Post("/makro/custom/produto")
 User Function postProduto() As Logical
-    Local cBody     := oRest:getBodyRequest()
-    Local jBody     := JsonObject():new()
-    Local jRet      := JsonObject():New()
-    Local lRet      := .T.
-    Local oModel, oModelSB1, aErro
-    Local cQryDup, cAliasQry
-    Local cCodProd, cDescProd, cMsg
+    Local cBody     as character
+    Local jBody     as json
+    Local jRet      as json
+    Local lRet      as logical
+    Local oModel    as object
+    Local oModelSB1 as object
+    Local aErro     as array
+    Local cQryDup   as character
+    Local cAliasQry as character
+    Local cCodProd  as character
+    Local cDescProd as character
+    Local cMsg      as character
+
+    cBody     := oRest:getBodyRequest()
+    jBody     := JsonObject():new()
+    jRet      := JsonObject():New()
+    lRet      := .T.
+    cCodProd  := ""
+    cDescProd := ""
+    cMsg      := ""
+
+    // Atribuições separadas das declarações (Isso mata o warning 100%)
+    cBody := oRest:getBodyRequest()
+    jBody := JsonObject():new()
+    jRet  := JsonObject():New()
+    lRet  := .T.
+    
+   
 
     jBody:fromJSON(cBody)
     jRet["ok"]  := .T.
@@ -80,7 +101,7 @@ User Function postProduto() As Logical
     cCodProd  := Iif(jBody:HasProperty("B1_COD"), jBody["B1_COD"], "")
     cDescProd := Iif(jBody:HasProperty("B1_DESC"), jBody["B1_DESC"], "")
 
-    // --- BLOQUEIO DE DUPLICIDADE ---
+    // --- BLOQUEIO DE DUPLICIDADE (Fail Fast) ---
     cAliasQry := GetNextAlias()
     cQryDup := "SELECT B1_COD FROM " + RetSqlName("SB1") + " "
     cQryDup += "WHERE D_E_L_E_T_ = ' ' "
@@ -138,11 +159,13 @@ Return .T.
 // =============================================================================
 @Get("/makro/custom/produto")
 User Function getProduto() As Logical
-    Local jQuery        := oRest:getQueryRequest()
-    Local aFilter       := {}
-    Local jRet
-    Local oSB1Adapter
-    Local aAllFieldsSB1 := {;
+    Local jQuery        := oRest:getQueryRequest() as json
+    Local aFilter       := {}                      as array
+    Local jRet          as json
+    Local oSB1Adapter   as object
+    Local aAllFieldsSB1 as array
+
+    aAllFieldsSB1 := {;
         "B1_COD", "B1_DESC", "B1_TIPO", "B1_UM", "B1_LOCPAD", "B1_GRUPO",;
         "B1_POSIPI", "B1_ORIGEM", "B1_GRTRIB", "B1_PICM", "B1_IPI",;
         "B1_ALIQISS", "B1_CODISS", "B1_CLASFIS", "B1_EX_NCM", "B1_CEST";
@@ -151,7 +174,6 @@ User Function getProduto() As Logical
     oSB1Adapter := SB1Adapter():New("GET")
     oSB1Adapter:AddMap(aAllFieldsSB1, "SB1")
 
-    // Configurações do Adapter vindas da URL
     oSB1Adapter:setPageSize(Iif(jQuery:HasProperty("pagesize"), Val(jQuery["pagesize"]), 50))
     oSB1Adapter:setOrderQuery(Iif(jQuery:HasProperty("order"), jQuery["order"], "B1_COD"))
     oSB1Adapter:setPage(Iif(jQuery:HasProperty("page"), Val(jQuery["page"]), 1))
@@ -167,7 +189,6 @@ User Function getProduto() As Logical
         oSB1Adapter:setUrlFilter(aFilter)
     EndIf
 
-    // Executa a busca (Note: Removemos a variável cWhere local para limpar o Warning do Linter)
     oSB1Adapter:GetListSB1(Iif(jQuery:HasProperty("where"), jQuery["where"], ""))
 
     If oSB1Adapter:IsOk()
@@ -187,12 +208,14 @@ Return .T.
 @Put("/makro/custom/produto/:id")
 @Patch("/makro/custom/produto/:id")
 User Function updateProduto() As Logical
-    Local oPath     := oRest:getPathParamsRequest()
-    Local cId       := oPath["id"]
-    Local cBody     := oRest:getBodyRequest()
-    Local jBody     := JsonObject():new()
-    Local jRet      := JsonObject():New()
-    Local oModel, oModelSB1, aErro
+    Local oPath     := oRest:getPathParamsRequest() as json
+    Local cId       := oPath["id"]                  as character
+    Local cBody     := oRest:getBodyRequest()       as character
+    Local jBody     := JsonObject():new()           as json
+    Local jRet      := JsonObject():New()           as json
+    Local oModel    as object
+    Local oModelSB1 as object
+    Local aErro     as array
 
     jBody:fromJSON(cBody)
 
@@ -223,10 +246,11 @@ Return .T.
 // =============================================================================
 @Delete("/makro/custom/produto/:id")
 User Function deleteProduto() As Logical
-    Local oPath     := oRest:getPathParamsRequest()
-    Local cId       := oPath["id"]
-    Local jRet      := JsonObject():New()
-    Local oModel, aErro
+    Local oPath     := oRest:getPathParamsRequest() as json
+    Local cId       := oPath["id"]                  as character
+    Local jRet      := JsonObject():New()           as json
+    Local oModel    as object
+    Local aErro     as array
 
     If fPrepModelProd(cId, MODEL_OPERATION_DELETE, @oModel, @jRet)
         If oModel:VldData()
@@ -261,15 +285,22 @@ Method New(cVerb) CLASS SB1Adapter
 return self
 
 Method GetListSB1(cWhereAdd) CLASS SB1Adapter
-    Local cWhere := ""
-    Local aArea  := FwGetArea()
+    Local cWhere as character
+    Local aArea  as array
+    
+    cWhere := ""
+    aArea  := FwGetArea()
     Default cWhereAdd := ""
+    
     ::SetQuery(GetQuerySB1())
     cWhere := "SB1.D_E_L_E_T_ = ' '"
+    
     If !Empty(cWhereAdd)
         cWhere += " AND ("+cWhereAdd+")"
     EndIf
+    
     ::SetWhere(cWhere)
+    
     If ::Execute()
         ::FillGetResponse()
     EndIf
@@ -277,7 +308,7 @@ Method GetListSB1(cWhereAdd) CLASS SB1Adapter
 Return
 
 Method AddMap(aAllFields as array, cAlias as character) Class SB1Adapter
-    Local nCont
+    Local nCont as numeric
     ::AddMapFields("id", "regsb1", .T., .F., {"regsb1", "N", 15, 0}, "SB1.R_E_C_N_O_")
     For nCont := 1 to Len(aAllFields)
         ::AddMapFields( ;
