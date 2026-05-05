@@ -1,0 +1,319 @@
+// =============================================================================
+// Fonte     : custom.funcionario.api.tlpp
+// Descrição : API REST - Inclusão e Consulta de Funcionários na SRA
+// Rota      : /makro/custom/funcionario
+// Autor     : Gemini Colaborador
+// Data      : 2026
+// Versão    : 1.1.0 - CRUD MVC + Duplicidade por Pessoa (Nome/CPF/Nasc)
+// =============================================================================
+
+#include "tlpp-core.th"
+#include "fwmvcdef.ch"
+#include "tlpp-rest.th"
+#include "topconn.ch"
+
+// =============================================================================
+// FUNÇÃO AUXILIAR: Mapeador Dinâmico de Payload
+// =============================================================================
+Static Function fInjectPayload(oModelSRA As Object, jBody As Json, lIsPost As Logical) As Logical
+    Local aKeys  := jBody:GetNames() as array
+    Local nI     as numeric
+    Local cField as character
+    
+    For nI := 1 To Len(aKeys)
+        cField := Upper(AllTrim(aKeys[nI]))
+        
+        // Bloqueia alteração da Matrícula em atualizações (PUT/PATCH)
+        If !lIsPost .AND. cField == "RA_MAT"
+            Loop
+        EndIf
+        
+        oModelSRA:SetValue(cField, jBody[cField])
+    Next nI
+Return .T.
+
+// =============================================================================
+// FUNÇÃO AUXILIAR: Localiza o funcionário e prepara o MVC
+// =============================================================================
+Static Function fPrepModelSRA(cId As Character, nOperation As Numeric, oModel As Object, jRet As Json) As Logical
+    Local lRet as logical
+
+    lRet := .F.
+    DbSelectArea("SRA")
+    SRA->(DbSetOrder(1)) // RA_FILIAL + RA_MAT
+
+    If SRA->(DbSeek(xFilial("SRA") + PadR(AllTrim(cId), TamSx3("RA_MAT")[1])))
+        oModel := FWLoadModel("GPEA010")
+        oModel:SetOperation(nOperation)
+        lRet := oModel:Activate()
+        
+        If !lRet
+            jRet["ok"]  := .F.
+            jRet["msg"] := "Falha ao ativar o modelo MVC (GPEA010)."
+            oRest:setStatusCode(500)
+        EndIf
+    Else
+        jRet["ok"]  := .F.
+        jRet["msg"] := "Funcionario [" + AllTrim(cId) + "] nao encontrado."
+        oRest:setStatusCode(404)
+    EndIf
+
+Return lRet
+
+// =============================================================================
+// @Post — INCLUSÃO DE FUNCIONÁRIO (MVC)
+// =============================================================================
+@Post("/makro/custom/funcionario")
+User Function postFuncionario() As Logical
+    Local cBody     as character
+    Local jBody     as json
+    Local jRet      as json
+    Local lRet      as logical
+    Local oModel    as object
+    Local oModelSRA as object
+    Local aErro     as array
+    Local cQryDup   as character
+    Local cAliasQry as character
+    Local cMatFunc  as character
+    Local cNomeFunc as character
+    Local cCPFFunc  as character
+    Local cNascFunc as character
+
+    cBody     := oRest:getBodyRequest()
+    jBody     := JsonObject():new()
+    jRet      := JsonObject():New()
+    lRet      := .T.
+    cMatFunc  := ""
+    cNomeFunc := ""
+    cCPFFunc  := ""
+    cNascFunc := ""
+
+    jBody:fromJSON(cBody)
+    jRet["ok"]  := .T.
+    jRet["msg"] := ""
+
+    // Captura dados para validação de unicidade de pessoa física
+    cNomeFunc := Iif(jBody:HasProperty("RA_NOME"), Upper(AllTrim(jBody["RA_NOME"])), "")
+    cCPFFunc  := Iif(jBody:HasProperty("RA_CIC"),  AllTrim(jBody["RA_CIC"]),  "")
+    cNascFunc := Iif(jBody:HasProperty("RA_NASC"), jBody["RA_NASC"], "") // Formato YYYYMMDD
+
+    // --- BLOQUEIO DE DUPLICIDADE POR PESSOA (Nome + CPF + Nascimento) ---
+    If !Empty(cCPFFunc) .AND. !Empty(cNascFunc) .AND. !Empty(cNomeFunc)
+        cAliasQry := GetNextAlias()
+        cQryDup := " SELECT RA_MAT FROM " + RetSqlName("SRA") + " "
+        cQryDup += " WHERE D_E_L_E_T_ = ' ' "
+        cQryDup += " AND RA_CIC  = '" + cCPFFunc + "' "
+        cQryDup += " AND RA_NASC = '" + cNascFunc + "' "
+        cQryDup += " AND RA_NOME = '" + cNomeFunc + "' "
+        
+        cQryDup := ChangeQuery(cQryDup)
+        DbUseArea(.T., "TOPCONN", TcGenQry(,,cQryDup), cAliasQry, .T., .T.)
+
+        If !(cAliasQry)->(EOF())
+            jRet["ok"]  := .F.
+            jRet["msg"] := "Conflito: Esta pessoa ja esta cadastrada sob a matricula: " + AllTrim((cAliasQry)->RA_MAT)
+            oRest:setStatusCode(409)
+            oRest:setKeyHeaderResponse("Content-Type", "application/json")
+            oRest:setResponse(jRet:toJson())
+            (cAliasQry)->(DbCloseArea())
+            Return .T.
+        EndIf
+        (cAliasQry)->(DbCloseArea())
+    EndIf
+
+    oModel := FWLoadModel("GPEA010")
+    oModel:SetOperation(MODEL_OPERATION_INSERT)
+    
+    If oModel:Activate()
+        oModelSRA := oModel:GetModel("SRAMASTER")
+        fInjectPayload(oModelSRA, jBody, .T.)
+
+        If oModel:VldData()
+            cMatFunc := oModelSRA:GetValue("RA_MAT")
+            oModel:CommitData()
+            jRet["id"]  := cMatFunc
+            jRet["msg"] := "Funcionario cadastrado com sucesso!"
+            oRest:setStatusCode(201)
+        Else
+            aErro := oModel:GetErrorMessage(.T.)
+            jRet["ok"]  := .F.
+            jRet["msg"] := "Erro MVC: " + AllToChar(aErro[6])
+            oRest:setStatusCode(400)
+        EndIf
+        oModel:DeActivate()
+    EndIf
+
+    oRest:setKeyHeaderResponse("Content-Type", "application/json")
+    oRest:setResponse(jRet:toJson())
+Return .T.
+
+// =============================================================================
+// @Get — CONSULTA DE FUNCIONÁRIOS (OData)
+// =============================================================================
+@Get("/makro/custom/funcionario")
+User Function getFuncionario() As Logical
+    Local jQuery        := oRest:getQueryRequest() as json
+    Local aFilter       := {}                      as array
+    Local jRet          as json
+    Local oSRAAdapter   as object
+    Local aAllFieldsSRA as array
+
+    aAllFieldsSRA := {;
+        "RA_MAT", "RA_NOME", "RA_CIC", "RA_ADMISSA", "RA_CC", "RA_CATSAL",;
+        "RA_SITFOLH", "RA_CODFUNC", "RA_CARGO", "RA_SALARIO", "RA_TIPOADM";
+    }
+
+    oSRAAdapter := SRAAdapter():New("GET")
+    oSRAAdapter:AddMap(aAllFieldsSRA, "SRA")
+
+    oSRAAdapter:setPageSize(Iif(jQuery:HasProperty("pagesize"), Val(jQuery["pagesize"]), 50))
+    oSRAAdapter:setOrderQuery(Iif(jQuery:HasProperty("order"), jQuery["order"], "RA_MAT"))
+    oSRAAdapter:setPage(Iif(jQuery:HasProperty("page"), Val(jQuery["page"]), 1))
+
+    If jQuery:HasProperty("fields")
+        oSRAAdapter:SetFields(jQuery["fields"])
+    Else
+        oSRAAdapter:SetFields("RA_MAT,RA_NOME,RA_CIC,REGSRA")
+    EndIf
+
+    If jQuery:HasProperty("filter")
+        aAdd(aFilter, {"FILTER", jQuery["filter"]}) 
+        oSRAAdapter:setUrlFilter(aFilter)
+    EndIf
+
+    oSRAAdapter:GetListSRA(Iif(jQuery:HasProperty("where"), jQuery["where"], ""))
+
+    If oSRAAdapter:IsOk()
+        jRet := oSRAAdapter:gtJsonObjResponse()
+        oRest:setResponse(jRet:ToJson())
+    Else
+        SetRestFault(oSRAAdapter:getCode(), oSRAAdapter:getMessage())
+    EndIf
+
+    oSRAAdapter:DeActivate()
+    oRest:setKeyHeaderResponse("Content-Type", "application/json")
+Return .T.
+
+// =============================================================================
+// @Put / @Patch — ATUALIZAÇÃO
+// =============================================================================
+@Put("/makro/custom/funcionario/:id")
+@Patch("/makro/custom/funcionario/:id")
+User Function updateFuncionario() As Logical
+    Local oPath     := oRest:getPathParamsRequest() as json
+    Local cId       := oPath["id"]                  as character
+    Local cBody     := oRest:getBodyRequest()       as character
+    Local jBody     := JsonObject():new()           as json
+    Local jRet      := JsonObject():New()           as json
+    Local oModel    as object
+    Local oModelSRA as object
+    Local aErro     as array
+
+    jBody:fromJSON(cBody)
+
+    If fPrepModelSRA(cId, MODEL_OPERATION_UPDATE, @oModel, @jRet)
+        oModelSRA := oModel:GetModel("SRAMASTER")
+        fInjectPayload(oModelSRA, jBody, .F.)
+
+        If oModel:VldData()
+            oModel:CommitData()
+            jRet["ok"]  := .T.
+            jRet["msg"] := "Funcionario atualizado com sucesso!"
+            oRest:setStatusCode(200)
+        Else
+            aErro := oModel:GetErrorMessage(.T.)
+            jRet["ok"]  := .F.
+            jRet["msg"] := "Erro MVC: " + AllToChar(aErro[6])
+            oRest:setStatusCode(400)
+        EndIf
+        oModel:DeActivate()
+    EndIf
+
+    oRest:setKeyHeaderResponse("Content-Type", "application/json")
+    oRest:setResponse(jRet:toJson())
+Return .T.
+
+// =============================================================================
+// @Delete — EXCLUSÃO
+// =============================================================================
+@Delete("/makro/custom/funcionario/:id")
+User Function deleteFuncionario() As Logical
+    Local oPath     := oRest:getPathParamsRequest() as json
+    Local cId       := oPath["id"]                  as character
+    Local jRet      := JsonObject():New()           as json
+    Local oModel    as object
+    Local aErro     := {}                           as array
+
+    If fPrepModelSRA(cId, MODEL_OPERATION_DELETE, @oModel, @jRet)
+        If oModel:VldData()
+            oModel:CommitData()
+            jRet["ok"]  := .T.
+            jRet["msg"] := "Funcionario excluido com sucesso!"
+            oRest:setStatusCode(200)
+        Else
+            aErro := oModel:GetErrorMessage(.T.)
+            jRet["ok"]  := .F.
+            jRet["msg"] := "Falha ao excluir: " + AllToChar(aErro[6])
+            oRest:setStatusCode(400)
+        EndIf
+        oModel:DeActivate()
+    EndIf
+
+    oRest:setKeyHeaderResponse("Content-Type", "application/json")
+    oRest:setResponse(jRet:toJson())
+Return .T.
+
+// =============================================================================
+// Class: SRAAdapter (FWAdapterBaseV2)
+// =============================================================================
+Class SRAAdapter FROM FWAdapterBaseV2
+    Public METHOD New()
+    Public METHOD GetListSRA()
+    Public Method AddMap()
+EndClass
+
+Method New(cVerb) CLASS SRAAdapter
+    _Super:New(cVerb, .T.)
+return self
+
+Method GetListSRA(cWhereAdd) CLASS SRAAdapter
+    Local cWhere as character
+    Local aArea  as array
+    
+    cWhere := ""
+    aArea  := FwGetArea()
+    Default cWhereAdd := ""
+    
+    ::SetQuery(GetQuerySRA())
+    cWhere := "SRA.D_E_L_E_T_ = ' '"
+    
+    If !Empty(cWhereAdd)
+        cWhere += " AND ("+cWhereAdd+")"
+    EndIf
+    
+    ::SetWhere(cWhere)
+    
+    If ::Execute()
+        ::FillGetResponse()
+    EndIf
+    FwrestArea(aArea)
+Return
+
+Method AddMap(aAllFields as array, cAlias as character) Class SRAAdapter
+    Local nCont as numeric
+    // Mapeamento em Maiúsculo para compatibilidade Postgres
+    ::AddMapFields("id", "REGSRA", .T., .F., {"REGSRA", "N", 15, 0}, "SRA.R_E_C_N_O_")
+    For nCont := 1 to Len(aAllFields)
+        ::AddMapFields( ;
+            Lower(aAllFields[nCont]), ;
+            Upper(aAllFields[nCont]), ;
+            .T., .F., ;
+            {aAllFields[nCont], GetSx3Cache(aAllFields[nCont],"X3_TIPO"), GetSx3Cache(aAllFields[nCont],"X3_TAMANHO"), GetSx3Cache(aAllFields[nCont],"X3_DECIMAL")} ;
+        )
+    Next
+Return
+
+Static Function GetQuerySRA()
+    Local cQuery AS CHARACTER
+    cQuery := " SELECT #QueryFields# FROM " + RetSqlName('SRA') + " SRA WHERE #QueryWhere#"
+Return cQuery
